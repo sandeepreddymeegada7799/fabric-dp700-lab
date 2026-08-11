@@ -1,3 +1,33 @@
+# Week 1 Notes — Bronze Layer
+Sessions: 1A (baseline), 1B (lakehouse), 1C (pipeline), 1D (dataflow), 1E (shortcuts)
+Status: COMPLETE — all three Bronze ingestion paths working
+
+
+
+
+## Session 1A — Study Guide + Baseline
+
+### Study guide read
+- Three domains each ~30-35% of exam
+- Skills measured as of: [note the date you saw on the guide]
+- Exam: ~100 min, ~40-60 questions, 700/1000 to pass
+- Microsoft Learn open in split-screen during exam
+
+### Baseline practice assessment
+- Score: [add your score when you take it]
+- Weakest domain: [fill in after taking it]
+- Note: take the assessment at https://learn.microsoft.com/en-us/credentials/certifications/fabric-data-engineer-associate/practice/assessment?assessment-type=practice&assessmentId=84&practice-assessment-type=practice
+
+### Fabric UI tour
+- Experience switcher: bottom-left icon (Power BI ↔ Fabric)
+- Monitor (left rail) = Monitoring Hub — Domain 3 home base
+- OneLake catalog = tenant-wide data discovery
+- Workspace settings = Spark, Git, License info tabs
+- Admin portal → Capacity settings = ascivofabric F2 paused/active
+- Deployment pipelines visible in ⋯ menu (session 4A)
+
+
+
 ## Session 1B — OneLake + Lakehouse + Delta
 
 ### OneLake architecture
