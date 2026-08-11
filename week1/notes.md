@@ -117,6 +117,9 @@ DON'T USE when:
 - Streaming/real-time queries: KQL (Eventhouse)
 
 
+## Session 1E — Shortcuts + Mirroring
+
+
 ## Mirroring capability matrix — EXAM TOPIC
 
 ### What mirroring does
