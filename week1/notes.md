@@ -115,3 +115,48 @@ DON'T USE when:
 - Complex/large-scale transforms: Notebook (PySpark)
 - Dimensional model queries: T-SQL (Warehouse)
 - Streaming/real-time queries: KQL (Eventhouse)
+
+
+## Mirroring capability matrix — EXAM TOPIC
+
+### What mirroring does
+Continuously replicates data from external source into Fabric OneLake
+Near real-time, no pipeline needed, change data capture (CDC) based
+Data lands as Delta Parquet in OneLake — queryable by Spark and SQL endpoint
+
+### Supported sources (memorize these)
+- Azure SQL Database ✓
+- Azure SQL Managed Instance ✓  
+- Azure Cosmos DB ✓
+- Snowflake ✓
+- Azure Databricks ✓
+- Open mirroring (any source via API) ✓
+
+### Mirroring vs Shortcut vs Pipeline — EXAM TOPIC
+- Mirroring: external DB → Fabric, continuous CDC replication, near real-time
+- Shortcut: Fabric/cloud storage → Fabric, zero copy, no replication (pointer only)
+- Pipeline: any source → Fabric, scheduled/triggered, batch copy
+
+### When exam says "use mirroring":
+- Source is Azure SQL DB / Snowflake / Cosmos
+- Need near real-time data in Fabric without writing pipelines
+- Want data as Delta format automatically
+
+### When exam says "use shortcut":
+- Data already in OneLake, ADLS Gen2, S3, or GCS
+- Don't want to copy data — just need to access it from multiple workspaces
+- Zero ETL, zero storage duplication
+
+
+## Shortcut supported targets — EXAM TOPIC
+Shortcuts can point to:
+- Another OneLake location (different workspace/lakehouse) ← what you built today
+- Azure Data Lake Storage Gen2 (ADLS Gen2)
+- Amazon S3
+- Google Cloud Storage (GCS)
+- Dataverse
+- S3-compatible storage
+
+Shortcuts CANNOT point to:
+- Azure SQL Database (use mirroring instead)
+- On-premises data sources (use pipeline with gateway)
