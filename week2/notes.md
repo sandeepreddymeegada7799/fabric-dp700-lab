@@ -132,3 +132,54 @@ df_bad.show()
 Output:
 AnalysisException
 [PATH_NOT_FOUND] Path does not exist: Tables/dbo/this_table_does_not_exist.
+
+
+## Session 2B — Silver layer: MERGE + incremental watermark
+
+### Full load vs incremental load — EXAM TOPIC
+- **Full load**: read ALL source data, overwrite target every run
+  - Simple but slow — reprocesses 3.8GB every night
+  - Use for: small tables, first-time loads, reference data
+- **Incremental load**: read only NEW/CHANGED records since last run
+  - Faster, cheaper — only processes delta
+  - Requires a watermark column (timestamp, ID, or date)
+
+### Handle duplicates, nulls, late-arriving data — EXAM TOPIC
+- **Duplicates**: df.dropDuplicates(["key_col1", "key_col2"])
+- **Nulls**: df.fillna({"col": default_value}) or df.dropna()
+- **Late-arriving**: watermark filter catches records that arrive after expected window
+
+### MERGE / upsert pattern — EXAM TOPIC (write from memory)
+```python
+from delta.tables import DeltaTable
+
+silver_table = DeltaTable.forName(spark, "lh_silver.dbo.table_name")
+
+silver_table.alias("silver") \
+    .merge(df_new.alias("new"), "silver.key = new.key") \
+    .whenMatchedUpdateAll() \
+    .whenNotMatchedInsertAll() \
+    .execute()
+```
+- whenMatchedUpdateAll() → UPDATE existing rows
+- whenNotMatchedInsertAll() → INSERT new rows
+- Result: upsert — no duplicates, always current
+
+### Watermark pattern — EXAM TOPIC (write from memory)
+```python
+# 1. Get watermark from Silver (last processed timestamp)
+watermark = silver_df.select(max("processed_at")).collect()[0][0]
+
+# 2. Read only new records from Bronze
+df_incremental = bronze_df.filter(col("load_date") > watermark)
+
+# 3. MERGE incremental records into Silver
+silver_table.merge(df_incremental, "silver.key = new.key") \
+    .whenMatchedUpdateAll() \
+    .whenNotMatchedInsertAll() \
+    .execute()
+```
+
+### Delta time travel
+DeltaTable.forName(spark, "table").history() → see every operation
+Every MERGE, overwrite, append is logged with version + timestamp
