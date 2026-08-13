@@ -321,3 +321,108 @@ UPDATE lh_silver.dbo.violations_pa_silver SET pwsid = 'X' WHERE 1=0;
 
 Lesson: SQL endpoint read-only applies in BOTH directions — 1B proved it from
 the Lakehouse side, this proves it from the Warehouse side.
+
+
+## Session 2D — Master pipeline orchestration
+
+### Part 1 — Pipeline-ready notebooks
+**Theory:** A pipeline runs a notebook fresh, top-to-bottom, every time — no
+shared session state survives between runs. So orchestrated notebooks must be
+self-contained: every import and table handle defined inside the notebook
+itself. (Proven in 2B when a session restart killed `silver_table`.)
+— EXAM TOPIC (orchestration patterns with notebooks and pipelines)
+
+```python
+# nb_silver_merge — single self-contained cell
+from pyspark.sql.functions import col, current_timestamp, max as spark_max
+from delta.tables import DeltaTable
+
+# READ Bronze, clean
+df_new = spark.read.format("delta").load("Tables/dbo/violations_pa_bronze") \
+    .dropDuplicates(["pwsid", "violation_id"]) \
+    .fillna({"severity_ind_cnt": 0}) \
+    .withColumn("silver_processed_at", current_timestamp())
+
+# MERGE into Silver (idempotent upsert)
+silver_table = DeltaTable.forName(spark, "lh_silver.dbo.violations_pa_silver")
+silver_table.alias("silver") \
+    .merge(df_new.alias("new"),
+           "silver.pwsid = new.pwsid AND silver.violation_id = new.violation_id") \
+    .whenMatchedUpdateAll() \
+    .whenNotMatchedInsertAll() \
+    .execute()
+
+print("Silver merge complete:",
+      spark.read.table("lh_silver.dbo.violations_pa_silver").count(), "rows")
+```
+
+### Part 2 — Rebuildable Gold via stored procedure
+**Theory:** Plain CTAS fails if the table already exists — fine for a one-time
+build, wrong for a nightly run. The Warehouse pattern: a stored procedure with
+DROP TABLE IF EXISTS + CTAS, called from the pipeline via the Stored procedure
+activity. Fabric Warehouse supports stored procedures; it does NOT support
+triggers — EXAM TRAP for SQL Server people.
+
+```sql
+CREATE PROCEDURE dbo.sp_rebuild_fact_violations
+AS
+BEGIN
+    DROP TABLE IF EXISTS dbo.fact_violations;
+
+    CREATE TABLE dbo.fact_violations
+    AS
+    SELECT
+        pwsid, violation_id, contaminant_code, violation_code,
+        violation_category_code, is_health_based_ind, compliance_status_code,
+        CAST(compl_per_begin_date AS DATE) AS compl_begin_date,
+        CAST(compl_per_end_date AS DATE) AS compl_end_date
+    FROM lh_silver.dbo.violations_pa_silver;
+END;
+```
+
+```sql
+-- Test the proc standalone before wiring it into the pipeline
+EXEC dbo.sp_rebuild_fact_violations;
+SELECT COUNT(*) FROM dbo.fact_violations;  -- expect 172,851
+```
+
+### Part 3 — Dependencies, retry, failure notification
+**Theory:** Pipeline activities chain through four ports: On success (green
+check), On failure (red X), On completion, On skip. Dragging from the Notebook
+activity's On-success port to the Stored procedure activity means Gold only
+rebuilds when Silver succeeded. Retry policy is configured PER ACTIVITY
+(General tab → Retry count + interval), not per pipeline — EXAM TOPIC.
+Failure alert = Office 365 Outlook activity wired to the On-failure port
+— EXAM TOPIC (configure alerts).
+
+Pipeline built: pl_master_nightly
+- Activity 1: Notebook → nb_silver_merge (Retry = 1, interval 120s)
+- Activity 2: Stored procedure → wh_gold.dbo.sp_rebuild_fact_violations
+- Wire: Notebook [On success] → Stored procedure
+- Wire: Notebook [On failure] → Outlook email (Subject: Nightly load FAILED)
+
+### Part 4 — Mid-chain failure triage
+**Theory:** Domain 3 error triage. When the Notebook activity fails, the
+downstream Stored procedure shows **Skipped** — not Failed. The dependency
+chain protected Gold from rebuilding on bad Silver data. Read the whole run
+picture: Failed vs Skipped vs Succeeded mean different things.
+
+Drill performed: broke the Bronze path in nb_silver_merge
+(`violations_pa_bronze_BROKEN`) → pipeline run → Notebook FAILED with
+PATH_NOT_FOUND, Stored procedure SKIPPED → fixed path → re-run → all green.
+
+### Part 5 — Schedule chaining + trigger types
+**Theory:** Two schedules form a chain: Bronze pipeline at 12:00 AM lands raw
+data; master pipeline at 12:30 AM processes it to Silver+Gold.
+Schedule trigger = fixed clock time. Event-based trigger = fires when a file
+lands in storage (motion sensor vs alarm clock) — EXAM TOPIC (design and
+implement schedules and event-based triggers).
+
+Configured: pl_master_nightly → Daily 12:30 AM Eastern.
+
+### Part 6 — Airflow in Fabric
+**Theory:** Apache Airflow job is a Fabric item type for orchestrating with
+Python DAGs. Choose it when a team already owns Airflow DAGs or needs
+Python-native control flow; choose native pipelines otherwise.
+— EXAM TOPIC (configure Apache Airflow workspace settings). Read-only on this
+lab; no DAG built.
