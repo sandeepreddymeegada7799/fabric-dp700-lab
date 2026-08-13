@@ -34,3 +34,27 @@ Three ingestion paths into lh_bronze:
 **Domain 1:** OneLake settings, workspace settings, orchestration basics
 **Domain 2:** Pipeline ingestion, Dataflow Gen2, shortcuts, mirroring matrix, tool-choice comparison
 **Domain 3:** Pipeline error triage, Dataflow errors, shortcut errors, Monitoring Hub
+
+
+### Week 2 — Silver + Gold ✅
+Medallion complete, one scheduled chain:
+
+Bronze (12:00 AM) ─ pl_bronze_epa_http → lh_bronze
+        ↓
+Silver (12:30 AM) ─ pl_master_nightly → Notebook nb_silver_merge
+                    dedup + MERGE upsert (pwsid, violation_id) + watermark incremental
+                    → lh_silver.dbo.violations_pa_silver (172,851 rows)
+        ↓
+Gold ──────────────  Stored procedure sp_rebuild_fact_violations (DROP + CTAS)
+                    → wh_gold: dim_water_system, dim_contaminant, fact_violations
+
+Orchestration: on-success dependency wiring, per-activity retry (1x/120s),
+failure notification, mid-chain failure isolation proven (Failed → Skipped).
+
+| New items (Week 2) | Type | Purpose |
+|---|---|---|
+| lh_silver | Lakehouse | Silver cleaned layer |
+| wh_gold | Warehouse | Gold star schema |
+| nb_2a_spark, nb_2b_silver | Notebooks | PySpark dev |
+| nb_silver_merge | Notebook | Pipeline-ready Silver merge |
+| pl_master_nightly | Pipeline | Silver+Gold orchestration, daily 12:30 AM |

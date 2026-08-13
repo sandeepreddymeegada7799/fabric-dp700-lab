@@ -426,3 +426,17 @@ Python DAGs. Choose it when a team already owns Airflow DAGs or needs
 Python-native control flow; choose native pipelines otherwise.
 — EXAM TOPIC (configure Apache Airflow workspace settings). Read-only on this
 lab; built a demo DAG: tasks + >> dependencies + cron schedule mirror pipeline activities/wires/schedule
+
+## 2E — Week 2 Milestone
+End-to-end proof run: Bronze pipeline → master pipeline → fact_violations
+rebuilt with today's watermark timestamp. Screenshots: pipeline runs green,
+Monitoring Hub run history, Gold row count + last_processed.
+
+### Week 2 exam topics banked
+Domain 1: Spark settings, orchestration patterns (notebooks+pipelines,
+parameters), schedules, Airflow (hands-on DAG demo)
+Domain 2: PySpark transforms, full vs incremental, MERGE upsert, watermark,
+dedup/nulls/late-arriving, dimensional model, denormalize, CTAS, cross-db
+queries, group/aggregate
+Domain 3: notebook errors, T-SQL errors, pipeline failure isolation
+(Failed vs Skipped), monitor runs, per-activity retry, alerts
