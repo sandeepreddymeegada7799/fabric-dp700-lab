@@ -425,4 +425,4 @@ Configured: pl_master_nightly → Daily 12:30 AM Eastern.
 Python DAGs. Choose it when a team already owns Airflow DAGs or needs
 Python-native control flow; choose native pipelines otherwise.
 — EXAM TOPIC (configure Apache Airflow workspace settings). Read-only on this
-lab; no DAG built.
+lab; built a demo DAG: tasks + >> dependencies + cron schedule mirror pipeline activities/wires/schedule
