@@ -183,3 +183,141 @@ silver_table.merge(df_incremental, "silver.key = new.key") \
 ### Delta time travel
 DeltaTable.forName(spark, "table").history() → see every operation
 Every MERGE, overwrite, append is logged with version + timestamp
+
+## Session 2C — Gold star schema + Warehouse
+
+### Part 1 — Warehouse creation
+
+**Theory:** A Fabric Warehouse is the third data store type (after Lakehouse and
+Eventhouse). Full T-SQL read AND write — unlike the Lakehouse SQL endpoint which
+is read-only. Under the hood it still stores data as Delta in OneLake, so Spark
+can read Warehouse tables too. Choose Warehouse when: pure SQL team, dimensional
+models, Gold serving layer. — EXAM TOPIC (choose appropriate data store)
+
+**Warehouse T-SQL gaps vs SQL Server — EXAM TRAP:**
+- No enforced PRIMARY KEY / FOREIGN KEY (metadata only, NOT ENFORCED)
+- No triggers, no IDENTITY columns
+- Limited data types (no money, no datetimeoffset, etc.)
+
+### Part 2 — Cross-database queries
+
+**Theory:** Every Lakehouse automatically gets a SQL analytics endpoint.
+Any Warehouse in the workspace can read any Lakehouse via three-part naming —
+like a linked server in SQL Server. Data never moves; the Warehouse reaches
+across to Silver's endpoint. Writes fail (endpoint is read-only). — EXAM TOPIC
+
+```sql
+SELECT TOP 5 pwsid, violation_id, contaminant_code
+FROM lh_silver.dbo.violations_pa_silver;
+```
+
+### Part 3 — Dimension tables via CTAS
+
+**Theory:** CTAS (CREATE TABLE AS SELECT) is THE Warehouse loading pattern —
+creates and populates in one statement. Dims hold descriptive attributes,
+one row per entity, built with SELECT DISTINCT. — EXAM TOPIC (prepare data
+for dimensional model)
+
+```sql
+-- One row per water system
+CREATE TABLE dbo.dim_water_system
+AS
+SELECT DISTINCT
+    pwsid, pws_type_code, population_served_count,
+    primary_source_code, epa_region
+FROM lh_silver.dbo.violations_pa_silver;
+
+-- Code → name lookup; TRY_CAST filters non-numeric codes like '1***'
+CREATE TABLE dbo.dim_contaminant
+AS
+SELECT DISTINCT
+    CAST(VALUE_CODE AS BIGINT) AS contaminant_code,
+    VALUE_DESCRIPTION AS contaminant_name
+FROM lh_bronze.dbo.sdwa_ref_code_values
+WHERE VALUE_TYPE = 'CONTAMINANT_CODE'
+  AND TRY_CAST(VALUE_CODE AS BIGINT) IS NOT NULL;
+```
+
+### Part 4 — Fact table
+
+**Theory:** The fact table holds events at a declared grain — here, one row =
+one violation. Contains foreign keys to dims + measures/flags + dates.
+Fact row count must match the source (172,851 = Silver count) — always verify.
+Splitting one wide Silver table into dims + fact = the "denormalize data"
+exam bullet (normalization direction), and joining them back at query time
+is denormalization for analytics.
+
+```sql
+CREATE TABLE dbo.fact_violations
+AS
+SELECT
+    pwsid, violation_id, contaminant_code, violation_code,
+    violation_category_code, is_health_based_ind, compliance_status_code,
+    CAST(compl_per_begin_date AS DATE) AS compl_begin_date,
+    CAST(compl_per_end_date AS DATE) AS compl_end_date
+FROM lh_silver.dbo.violations_pa_silver;
+
+SELECT COUNT(*) AS fact_rows FROM dbo.fact_violations;  -- expect 172,851
+```
+
+### Part 5 — Analytical queries over Gold
+
+**Theory:** These prove the star schema works and cover "group and aggregate
+data" (Domain 2). Pattern the exam tests: JOIN fact→dim to translate codes
+into names, GROUP BY the dim attribute, aggregate the fact rows. In the real
+world these queries ARE the product — Q1 is AquaProof's core insight, Q4 is a
+dashboard trend line, Q5 is a compliance alert.
+
+```sql
+-- Q1: Health-based violations by contaminant (JOIN + GROUP BY)
+SELECT TOP 10 d.contaminant_name, COUNT(*) AS violation_count
+FROM dbo.fact_violations f
+JOIN dbo.dim_contaminant d ON f.contaminant_code = d.contaminant_code
+WHERE f.is_health_based_ind = 'Y'
+GROUP BY d.contaminant_name
+ORDER BY violation_count DESC;
+
+-- Q2: Violations by system type (conditional aggregation with CASE)
+SELECT s.pws_type_code, COUNT(*) AS violations,
+       SUM(CASE WHEN f.is_health_based_ind = 'Y' THEN 1 ELSE 0 END) AS health_based
+FROM dbo.fact_violations f
+JOIN dbo.dim_water_system s ON f.pwsid = s.pwsid
+GROUP BY s.pws_type_code
+ORDER BY violations DESC;
+
+-- Q3: Largest systems with health violations (TOP + ORDER BY)
+SELECT TOP 10 s.pwsid, s.population_served_count, COUNT(*) AS health_violations
+FROM dbo.fact_violations f
+JOIN dbo.dim_water_system s ON f.pwsid = s.pwsid
+WHERE f.is_health_based_ind = 'Y'
+GROUP BY s.pwsid, s.population_served_count
+ORDER BY s.population_served_count DESC;
+
+-- Q4: Time trend (date function in GROUP BY)
+SELECT YEAR(compl_begin_date) AS viol_year, COUNT(*) AS violations
+FROM dbo.fact_violations
+GROUP BY YEAR(compl_begin_date)
+ORDER BY viol_year DESC;
+
+-- Q5: Open violations (NOT IN filter — compliance alert)
+SELECT COUNT(*) AS open_violations
+FROM dbo.fact_violations
+WHERE compliance_status_code NOT IN ('K', 'R');
+```
+
+### Part 6 — T-SQL error drill
+
+**Theory:** Domain 3 "identify and resolve T-SQL errors." Fabric Warehouse
+throws the same error classes as SQL Server — read the message, it names
+the problem.
+
+```sql
+-- Error 1: Invalid column name
+SELECT pwsid, nonexistent_column FROM dbo.fact_violations;
+
+-- Error 2: Writes to Lakehouse SQL endpoint fail even from Warehouse
+UPDATE lh_silver.dbo.violations_pa_silver SET pwsid = 'X' WHERE 1=0;
+```
+
+Lesson: SQL endpoint read-only applies in BOTH directions — 1B proved it from
+the Lakehouse side, this proves it from the Warehouse side.
