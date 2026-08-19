@@ -2,58 +2,68 @@
 
 ### Part 1 — Eventhouse hierarchy
 **Theory:** Eventhouse is the CONTAINER for real-time analytics; KQL
-databases live inside it (like a SQL instance holding databases). Optimized
-for time-series, append-heavy, high-frequency data. Third data store type:
-Lakehouse (files+Spark), Warehouse (T-SQL), Eventhouse (streaming+KQL).
-— EXAM TOPIC (choose appropriate data store)
+databases live inside it (like a SQL Server instance holding databases).
+Optimized for append-heavy, timestamped, high-frequency data queried by
+time windows. Third data store type: Lakehouse (files + Spark), Warehouse
+(T-SQL + dimensional), Eventhouse (streaming + KQL). Delta/Lakehouse is
+wrong for high-frequency micro-writes (small-file problem) — that's WHY
+Eventhouse exists. — EXAM TOPIC (choose appropriate data store)
 
-Created: eh_realtime (Eventhouse) with auto-created KQL database.
+Created: eh_realtime with auto-created KQL database of the same name.
 
-### Part 2 — Eventstream
-**Theory:** Eventstream = managed, no-code streaming pipe: sources →
-optional in-flight transforms → destinations. Data flows continuously;
-nothing is "run." Sources include Event Hubs, IoT Hub, Kafka, CDC feeds,
-sample data. — EXAM TOPIC (process data using Eventstreams)
+### Part 2 — Eventstream (the always-on pipe)
+**Theory:** Eventstream = managed streaming pipe: sources → optional
+in-flight transforms → destinations. Nothing is "run" — it catches events
+continuously. Sources: Event Hubs, IoT Hub, Kafka, CDC, sample data.
+Batch loading = pipeline wakes on schedule; streaming loading = eventstream
+never sleeps. — EXAM TOPIC (design loading pattern for streaming data)
 
-Built: es_bike_stream using Bicycles sample source; live preview confirmed.
+Built: es_bike_stream with Bicycles sample source; live preview confirmed.
 
 ### Part 3 — In-flight transforms
-**Theory:** Eventstream transforms process events mid-flight: Manage fields
-(rename/remove), Filter, Aggregate, Group by, Join, Union, Expand.
-Applied BEFORE landing when destination uses "Event processing before
-ingestion" mode; "Direct ingestion" bypasses transforms. — EXAM TRAP
+**Theory:** Transforms process events mid-flight, BEFORE landing:
+Manage fields, Filter, Aggregate, Group by, Join, Union, Expand.
+Only applied when destination mode = "Event processing before ingestion";
+"Direct ingestion" bypasses transforms entirely. — EXAM TRAP
 
-Applied: Manage fields — removed 2 columns, renamed BikepointID → station_id.
+Applied: ManageFields — removed Latitude/Longitude, renamed
+BikepointID → station_id. Verified at destination with:
+```kusto
+bike_events | getschema
+```
 
-### Part 4 — Destination + loading pattern
-**Theory:** Streaming loading pattern = source → eventstream → eventhouse
-table, continuously. Contrast batch: source → pipeline (scheduled) →
-lakehouse. — EXAM TOPIC (design loading pattern for streaming data)
+### Part 4 — Destination + the wiring lesson
+**Theory:** Destination node config: Eventhouse → KQL database → new table
+bike_events, Json input, activate ingestion. Nothing is live until Publish
+(Edit mode). Nodes must be WIRED: drag from output port → input port.
+— EXAM TOPIC (Eventstream error triage, Domain 3)
 
-Routed to eh_realtime → new table bike_events; row count grows on refresh.
+Error hit for real: Authoring errors tab showed
+- ManageFields / Warning: "missing a destination to work"
+- Eventhouse / Fatal: "missing an input to work"
+= unwired node. Fatal blocks publishing; Warning doesn't. Fixed by
+dragging the connection, errors cleared, published.
 
-### Part 5 — KQL first taste
+### Part 5 — Live ingestion proven with KQL
 ```kusto
 bike_events | take 10
-bike_events | count
+bike_events | count      // 17,430
+bike_events | count      // 17,700 one minute later — nobody ran anything
 ```
-Pipes, top-to-bottom. Full KQL session = 3B.
+270 events/minute arriving continuously. KQL reads top-to-bottom via pipes.
+Full KQL session = 3B (queryset kql_3a_explore reused there).
 
 ### Choose the streaming engine — EXAM TOPIC
-- **Eventstream**: managed, no-code/low-code, built-in sources + transforms,
-  routes to Eventhouse/Lakehouse. DEFAULT choice.
-- **Spark structured streaming**: code-first (readStream/writeStream in a
-  notebook), custom logic, ML in-stream, exotic sinks. Escape hatch when
-  Eventstream transforms aren't enough.
+- Eventstream: managed, no/low-code, built-in sources + transforms. DEFAULT.
+- Spark structured streaming: code-first (readStream/writeStream), custom
+  logic/ML in-stream, exotic sinks. Escape hatch.
 
 ### Native tables vs OneLake shortcuts in RTI — EXAM TOPIC
-- Native KQL table (bike_events): data ingested INTO the eventhouse —
-  fastest queries, hot cache.
-- OneLake shortcut in eventhouse: points at existing Delta (e.g. lh_silver
-  tables) — query batch + streaming together, no copy, slower than native.
+- Native KQL table (bike_events): ingested into eventhouse, hot cache,
+  fastest time-window queries.
+- OneLake shortcut inside eventhouse: points at existing Delta (e.g.
+  lh_silver) — query batch + streaming together, no copy, slower.
 
-### Eventstream/Eventhouse error triage — EXAM TOPIC (Domain 3)
-- Per-node status on the Eventstream canvas + Data insights = where errors
-  surface (schema mismatch, broken destination).
-- Deactivated stream = ingestion stops silently — count stops growing.
-- COST: a published Eventstream consumes CUs continuously.
+### Cost note (real-world + capacity behavior)
+A published Eventstream consumes CUs CONTINUOUSLY. Shutdown ritual for
+streaming sessions: deactivate stream FIRST, then pause capacity.
