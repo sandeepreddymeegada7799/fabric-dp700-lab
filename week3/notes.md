@@ -67,3 +67,183 @@ Full KQL session = 3B (queryset kql_3a_explore reused there).
 ### Cost note (real-world + capacity behavior)
 A published Eventstream consumes CUs CONTINUOUSLY. Shutdown ritual for
 streaming sessions: deactivate stream FIRST, then pause capacity.
+
+
+## Session 3B — KQL fundamentals on a live stream
+
+### Part 1 — Core operators (the SQL → KQL bridge)
+**Theory:** KQL reads top-to-bottom through pipes; each line transforms the
+previous result. Direct mapping from T-SQL: `where` = WHERE, `project` =
+SELECT (columns), `summarize ... by` = GROUP BY + aggregates, `order by` /
+`top` = ORDER BY / TOP, `take` = quick sample. All queries below ran against
+bike_events while it was actively ingesting (~270 events/min).
+— EXAM TOPIC (transform data using KQL)
+
+```kusto
+// WHERE — filter
+bike_events
+| where No_Bikes > 20
+| take 10
+
+// SELECT columns — project
+bike_events
+| where Neighbourhood == "Chelsea"
+| project StationID, Street, No_Bikes, No_Empty_Docks
+| take 10
+
+// GROUP BY — summarize
+bike_events
+| summarize avg_bikes = avg(No_Bikes), events = count() by Neighbourhood
+| order by events desc
+
+// TOP N
+bike_events
+| summarize max_bikes = max(No_Bikes) by Street
+| top 10 by max_bikes desc
+```
+
+### Part 2 — Windowing with bin() — THE exam pattern
+**Theory:** bin(timestamp, 5m) rounds every timestamp down into its 5-minute
+bucket, so summarize groups by time window. "Aggregate per time window" is
+the single most-tested KQL pattern on DP-700. AquaProof translation: avg
+chlorine reading per facility per 5-min window.
+**LESSON EARNED:** every expression in `by` must be aliased, or KQL
+auto-names it Column1 (same habit as aliasing computed columns in T-SQL).
+`ingestion_time()` = built-in per-row arrival timestamp (hidden system
+column $IngestionTime) — works in queries, NOT in materialized views.
+— EXAM TOPIC (create windowing functions)
+
+```kusto
+// Events per 5-minute window (alias the bin!)
+bike_events
+| summarize events = count() by time_bucket = bin(ingestion_time(), 5m)
+| order by time_bucket asc
+
+// Two-dimensional window: per neighbourhood per 10 min
+bike_events
+| summarize avg_bikes = avg(No_Bikes) by Neighbourhood, time_bucket = bin(ingestion_time(), 10m)
+| order by Neighbourhood asc, time_bucket asc
+
+// Instant visualization — feeds Real-Time Dashboards (3C)
+bike_events
+| summarize events = count() by time_bucket = bin(ingestion_time(), 5m)
+| render timechart
+```
+
+### Part 3 — let, datatable, join
+**Theory:** `let` = variable/CTE. `datatable` = inline literal table.
+`join kind=inner` = INNER JOIN (also leftouter etc.). Same relational
+algebra, KQL syntax.
+
+```kusto
+let zone_lookup = datatable(Neighbourhood:string, zone:string) [
+    "Chelsea", "West",
+    "Fitzrovia", "Central",
+    "Mile End", "East",
+    "Wandsworth Road", "South"
+];
+bike_events
+| join kind=inner zone_lookup on Neighbourhood
+| summarize avg_bikes = avg(No_Bikes) by zone
+```
+
+### Part 4 — Update policy (streaming ETL inside the database)
+**Theory:** An update policy auto-runs a function whenever new rows land in
+a source table, writing derived rows to a target table — server-side
+transform-on-ingest, no pipeline, no notebook. Dot-prefixed commands
+(.create, .alter, .show) are MANAGEMENT commands (schema/policy), distinct
+from queries — exam distinguishes them.
+— EXAM TOPIC (optimize Eventhouses)
+
+```kusto
+// 1. Target table
+.create table bike_events_summary (station_id: string, Street: string, No_Bikes: long, capacity: long)
+
+// 2. Transform function
+.create-or-alter function TransformBikeEvents() {
+    bike_events
+    | project station_id = StationID, Street, No_Bikes, capacity = No_Bikes + No_Empty_Docks
+}
+
+// 3. Attach policy
+.alter table bike_events_summary policy update
+@'[{"IsEnabled": true, "Source": "bike_events", "Query": "TransformBikeEvents()", "IsTransactional": false}]'
+
+// Verify
+bike_events_summary | count
+```
+
+**LESSONS EARNED (count stayed 0, then jumped to 750):**
+- Policies fire per SEALED INGESTION BATCH — eventstream batches can take
+  up to ~5 min to close. Zero rows for a few minutes ≠ broken.
+- Update policies are FORWARD-ONLY: they transform only events arriving
+  after attachment, never backfill history (750 summary vs 18k+ raw).
+- With IsTransactional:false, a broken policy fails SILENTLY — source keeps
+  ingesting, derived table just stays empty. — EXAM TRAP
+- Triage sequence (Domain 3, Eventhouse errors):
+```kusto
+.show table bike_events_summary policy update   // is it attached?
+TransformBikeEvents() | take 10                 // does the function run?
+bike_events | getschema                          // exact column names (CASE-SENSITIVE)
+.show ingestion failures | where Table == "bike_events_summary"
+```
+
+### Part 5 — Materialized view
+**Theory:** A materialized view is a continuously-maintained aggregation —
+pre-computed as data arrives, so querying it skips re-scanning millions of
+raw rows. arg_max(ts, ...) = latest-row-per-group (needs a real timestamp).
+— EXAM TOPIC (optimize Eventhouses)
+
+**ERROR HIT (exam-grade):** `.create materialized-view` with
+`arg_max(ingestion_time(), ...)` failed:
+`'$IngestionTime' is not valid ... does not comply with naming rules`.
+**LESSON:** MVs cannot materialize system columns — real columns only.
+Latest-per-entity semantics require the source to CARRY its own timestamp
+column (design it into the eventstream). getschema confirmed our table has
+no datetime column (StationID, Street, Neighbourhood, No_Bikes,
+No_Empty_Docks — note: rename produced StationID, exact case matters).
+
+Pivot — peak per station over real columns:
+```kusto
+.create materialized-view mv_peak_per_station on table bike_events
+{
+    bike_events
+    | summarize peak_bikes = max(No_Bikes) by StationID, Street
+}
+
+mv_peak_per_station | count   // 120 at creation, climbing toward ~790
+```
+
+**LESSON EARNED:** MVs are also forward-only BY DEFAULT — start from
+creation time. `with (backfill=true)` includes history (MV-only option;
+update policies can never backfill):
+```kusto
+.create materialized-view with (backfill=true) mv_peak_per_station on table bike_events
+{ bike_events | summarize peak_bikes = max(No_Bikes) by StationID, Street }
+```
+
+### The decision triangle — EXAM TOPIC (memorize)
+- **Plain query:** computed on demand, every time. Ad-hoc analysis.
+- **Update policy:** transform/route rows AS THEY ARRIVE into a new table.
+  "Reshape on ingest."
+- **Materialized view:** continuously-maintained AGGREGATION over one table.
+  "Latest/max per entity, fast, always current."
+
+### The three-table story (what the counts proved)
+- bike_events (raw log): grows forever — 18k+ and climbing
+- bike_events_summary (update policy): grows, but only from policy
+  attachment forward — 750+
+- mv_peak_per_station (MV): plateaus at the entity count (~790 stations)
+  regardless of how long the stream runs
+
+### Part 6 — Query acceleration vs standard shortcuts — EXAM TOPIC
+- Standard OneLake shortcut in an eventhouse: reads Delta files cold each
+  query. No extra cost, slower; batch + streaming queryable together.
+- Query acceleration ON the shortcut: caches/indexes the shortcut data
+  inside the eventhouse → near-native KQL speed, at extra CU + storage cost.
+- Trade-off question shape: "team needs fast KQL over existing Delta
+  without ingesting a copy" → shortcut + query acceleration.
+
+### Cost/behavior note
+Stream stayed live all session (needed for 3C Activator). Shutdown order
+for streaming work: deactivate eventstream FIRST, then pause capacity.
