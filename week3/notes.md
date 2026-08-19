@@ -247,3 +247,90 @@ update policies can never backfill):
 ### Cost/behavior note
 Stream stayed live all session (needed for 3C Activator). Shutdown order
 for streaming work: deactivate eventstream FIRST, then pause capacity.
+
+
+## Session 3C — Activator alerts + Real-Time Dashboard
+
+### Part 1 — Activator (detection → action on streaming data)
+**Theory:** Activator watches a stream (or a KQL query / dashboard tile) and
+fires an ACTION — email, Teams, or a Fabric item — when a CONDITION is met.
+No polling, no dashboard-watching human, no scheduled job. It's the "act"
+corner of Real-Time Intelligence. Rules are created from an eventstream's
+**Set alert** button and live inside an Activator item, which shows the rule,
+a live chart of the monitored property, and an ACTIVATION HISTORY of every
+firing. — EXAM TOPIC (configure alerts)
+
+Built: rule `bikes_above_30` on es_bike_stream
+- Monitor source: es_bike_stream-stream
+- Grouping field: StationID  → condition evaluated PER STATION, not across
+  the whole firehose
+- When: No_Bikes
+- Condition: Numeric state → **Becomes greater than 30**
+- Action: Email → subject "Activator alert"
+
+**EXAM NUANCE — the condition categories (seen in the real UI):**
+| Category | Fires when | Use for |
+|---|---|---|
+| Numeric/Text/Logical **change** | the value CHANGES (any change, or by an amount) | drift detection |
+| Numeric/Text/Logical **state** | value's STATE vs a threshold (Becomes greater than, Becomes less than, Is greater than) | threshold alerts ← used here |
+| Common change → **Changes** | ANY change at all | too noisy, alert spam |
+| **Heartbeat** | data STOPS arriving | dead sensor / broken feed detection |
+
+Key distinction: **"Becomes greater than"** fires once on the TRANSITION
+across the threshold; **"Is greater than"** fires on EVERY event above it
+(spam). Transition semantics + a grouping field = one useful alert per
+entity per crossing.
+
+AquaProof mapping: No_Bikes becomes > 30 per StationID
+≡ chlorine_ppm becomes > regulatory limit per sensor_id → page the
+compliance officer in real time. Heartbeat ≡ "sensor went dark."
+
+### Part 2 — Real-Time Dashboard
+**Theory:** RTI's serving layer. Each tile ("visual") is a KQL query with an
+auto-refresh interval, sourced from a KQL database. Best practice: point
+tiles at MATERIALIZED VIEWS / summary tables rather than raw event scans —
+pre-computed aggregates are faster and cheaper on every refresh.
+
+Built: `rtd_bike_ops`, data source eh_realtime, 3 tiles, auto-refresh 30s.
+
+```kusto
+// Tile 1 (Time series) — live ingestion rate
+bike_events
+| summarize events = count() by time_bucket = bin(ingestion_time(), 5m)
+| render timechart
+```
+
+```kusto
+// Tile 2 (Column chart) — reads the MATERIALIZED VIEW, not raw
+mv_peak_per_station
+| top 10 by peak_bikes
+| render columnchart
+```
+
+```kusto
+// Tile 3 (Bar chart) — availability by neighbourhood
+bike_events
+| summarize avg_bikes = avg(No_Bikes) by Neighbourhood
+| render barchart
+```
+
+Dashboard also offers **Add alert** directly on a tile — a second entry
+point to Activator (same engine, different starting surface).
+
+### The complete Real-Time Intelligence picture — EXAM SUMMARY
+```
+Eventstream   → catch + transform events in flight   (3A)
+Eventhouse    → store + query with KQL               (3A, 3B)
+  ├ update policy      → transform on ingest
+  └ materialized view  → maintained aggregation
+Activator     → ACT on conditions (email/Teams)      (3C)
+RT Dashboard  → SEE it live, auto-refreshing         (3C)
+```
+Batch lane (pipeline → lakehouse → warehouse) never touches this path.
+Scenario tells: "continuous arrival + time-window queries + act within
+seconds" → RTI. "Files on a schedule + dimensional model" → batch.
+
+### Cost/behavior note
+A published eventstream + a live Activator rule + an auto-refreshing
+dashboard all consume CUs CONTINUOUSLY. Shutdown order for streaming
+sessions: deactivate eventstream FIRST → then pause the capacity.
