@@ -334,3 +334,183 @@ seconds" → RTI. "Files on a schedule + dimensional model" → batch.
 A published eventstream + a live Activator rule + an auto-refreshing
 dashboard all consume CUs CONTINUOUSLY. Shutdown order for streaming
 sessions: deactivate eventstream FIRST → then pause the capacity.
+
+## Session 3D — Security & Governance
+
+### Part 0 — Source data with PII
+**Theory:** The EPA water systems data carries real-world sensitive fields —
+admin_name, email_addr, phone_number — making it a natural target for the
+security controls in this session. The 1C pipeline created a nested folder
+structure (URL path segments became folders) so the CSV had to be read with
+Spark using the explicit path, not the lakehouse UI "Load to Tables."
+— EXAM TOPIC (identify and resolve pipeline/Copy activity quirks)
+
+```python
+# Read the nested CSV that the Copy activity created
+df = spark.read.option("header", "true").csv(
+    "Files/raw/epa_pw_systems_PA.csv/WATER_SYSTEM/PRIMACY_AGENCY_CODE/PA/"
+)
+df.write.format("delta").mode("overwrite").option("mergeSchema", "true") \
+    .saveAsTable("lh_bronze.dbo.pw_systems_contact")
+```
+
+```sql
+-- Expose PII columns in the Gold Warehouse
+CREATE TABLE dbo.dim_system_contact
+AS
+SELECT DISTINCT pwsid, pws_name, admin_name, email_addr,
+    phone_number, city_name, state_code, epa_region
+FROM lh_bronze.dbo.pw_systems_contact;
+```
+
+### Part 1 — Second user for security testing
+**Theory:** Security you can't test is security you don't understand.
+Created analyst@...onmicrosoft.com in Entra (no admin role) and added to
+dp700-dev as Viewer. Verified baseline: analyst can query wh_gold, sees
+8,052 systems in region 3 — no restrictions yet applied.
+
+### Part 2 — Workspace roles & item permissions — EXAM TOPIC
+**Theory:** Four roles, least → most powerful:
+- **Viewer**: read items and data only
+- **Contributor**: create, edit, delete items; run pipelines
+- **Member**: Contributor + share items + add others (up to Member level)
+- **Admin**: Member + change workspace settings, delete workspace
+
+Item-level permission = sharing one item without workspace access.
+In wh_gold → ⋯ → Manage permissions → you can grant Read/ReadData/ReadAll/Build.
+These are FINER-grained than workspace roles.
+— EXAM TOPIC: workspace roles vs item permissions vs OneLake data access roles
+  are three SEPARATE security layers; a scenario question names the layer.
+
+### Part 3 — Row-Level Security (RLS) — EXAM TOPIC
+**Theory:** RLS silently filters rows using a predicate function called once
+per row. Three required parts: schema, function (WITH SCHEMABINDING, returns
+TABLE), security policy with FILTER PREDICATE.
+Admin bypass: USER_NAME() check inside the WHERE ensures admins see all rows.
+FILTER = hides rows from SELECT; BLOCK = prevents writes violating the rule.
+
+```sql
+CREATE SCHEMA Security;
+```
+
+```sql
+-- Predicate: returns 1 row (allow) or 0 rows (hide) per row evaluated
+CREATE FUNCTION Security.fn_region_filter(@epa_region VARCHAR(10))
+RETURNS TABLE
+WITH SCHEMABINDING        -- required for RLS predicate functions
+AS
+RETURN
+    SELECT 1 AS fn_result
+    WHERE @epa_region = '9'    -- allow region 9 (none in our data = analyst sees nothing)
+       OR USER_NAME() = 'fabric@sandeepr568gmail.onmicrosoft.com';  -- admin bypass
+```
+
+```sql
+-- Policy attaches the function to the table; STATE = ON activates it
+CREATE SECURITY POLICY Security.RegionFilter
+ADD FILTER PREDICATE Security.fn_region_filter(epa_region)
+ON dbo.dim_water_system
+WITH (STATE = ON);
+```
+
+**PROVEN:** fabric@ sees 8,052 rows; analyst sees 0 rows with NO error.
+RLS behavior: **silent filtering** — query succeeds, just returns fewer rows.
+To disable: `ALTER SECURITY POLICY Security.RegionFilter WITH (STATE = OFF);`
+
+### Part 4 — Column-Level Security (CLS) — EXAM TOPIC
+**Theory:** DENY on specific columns blocks access loudly with Msg 230.
+DENY overrides any GRANT — strongest permission wins.
+
+```sql
+DENY SELECT ON dbo.dim_system_contact(email_addr, phone_number, admin_name)
+TO [analyst@sandeepr568gmail.onmicrosoft.com];
+```
+
+**PROVEN:**
+- `SELECT * FROM dbo.dim_system_contact` → Msg 230 fired 3 times (once per
+  denied column). Query failed completely.
+- `SELECT pwsid, pws_name, city_name, state_code ...` → succeeded, returned data.
+
+**THE KEY CONTRAST (exam's favorite pair):**
+| | RLS | CLS |
+|---|---|---|
+| Mechanism | predicate filter | DENY permission |
+| User experience | silent, no error | loud, Msg 230 |
+| Query outcome | succeeds, fewer rows | fails entirely |
+| Implication | SELECT * still works | SELECT * breaks |
+
+### Part 5 — Dynamic Data Masking (DDM) — EXAM TOPIC
+**Theory:** Masks column values at display time — data on disk is unchanged.
+Query succeeds, columns are accessible, but values are obfuscated.
+Users with UNMASK permission see real values. DDM is obfuscation, NOT
+encryption. NEVER a substitute for CLS/encryption for true security.
+
+```sql
+-- First: REVOKE the CLS DENY so DDM can show (DENY would win otherwise)
+REVOKE SELECT ON dbo.dim_system_contact(email_addr, phone_number, admin_name)
+TO [analyst@sandeepr568gmail.onmicrosoft.com];
+```
+
+```sql
+-- email() mask: first letter + XXXX@XXXX.com
+ALTER TABLE dbo.dim_system_contact
+ALTER COLUMN email_addr VARCHAR(8000) MASKED WITH (FUNCTION = 'email()');
+
+-- partial(prefix, padding, suffix): show last 4 digits of phone
+ALTER TABLE dbo.dim_system_contact
+ALTER COLUMN phone_number VARCHAR(8000) MASKED WITH (FUNCTION = 'partial(0,"XXX-XXX-",4)');
+
+-- default(): XXXX for strings, 0 for numbers, 1900-01-01 for dates
+ALTER TABLE dbo.dim_system_contact
+ALTER COLUMN admin_name VARCHAR(8000) MASKED WITH (FUNCTION = 'default()');
+```
+
+**Mask function reference:**
+- `default()` → XXXX / 0 / 1900-01-01
+- `email()` → aXXX@XXXX.com
+- `partial(p,"pad",s)` → p chars from start + literal pad + s chars from end
+- `random(1,100)` → random number in range (numeric columns)
+
+**PROVEN:** analyst query succeeded; admin_name showed XXXX, email showed
+masked form, phone showed XXX-XXX-NNNN. fabric@ saw real values.
+
+### Part 6 — OneLake security — EXAM TOPIC
+**Theory:** OneLake data access roles restrict at the STORAGE LAYER — below
+workspace roles. DefaultReader is auto-created for every Lakehouse; it grants
+Read permission to all Tables and Files by default to workspace members.
+You can EDIT DefaultReader or create custom roles to restrict access to
+specific schemas, tables, or file folders — e.g. block raw/ from analysts
+while still letting them query Tables via the SQL endpoint.
+
+Hierarchy:
+```
+Workspace role (Admin/Member/Contributor/Viewer)
+    ↓
+OneLake data access role (DefaultReader, custom roles)
+    ↓
+Warehouse security (RLS / CLS / DDM)
+```
+Each layer is independent; a tighter inner layer always wins.
+
+Seen in UI: DefaultReader covers Tables/dbo (Schema), Tables/ref_codes_shortcut
+(Schema), Files/raw (Folder) — all with Read/Grant.
+
+### Part 7 — Sensitivity labels (theory only — needs Purview licensing)
+Labels (Confidential, Public, General, etc.) classify items and TRAVEL
+DOWNSTREAM into any export or derived report. Assigned in item Settings.
+Managed centrally in Microsoft Purview. Not available on personal tenants.
+— EXAM TOPIC: know that labels travel and are Purview-managed.
+
+### Part 8 — Endorsement — EXAM TOPIC
+**Theory:** Endorsement = a trust badge on an item. Two levels:
+- **Promoted**: any workspace member can set — "I vouch for this"
+- **Certified**: set only by a tenant-admin-designated certifier — "IT approved"
+
+Done: wh_gold set to Promoted. Badge visible in workspace list Endorsement column.
+Purpose: analysts use the badged version, not a stale copy someone made last month.
+
+### Part 9 — Domains — EXAM TOPIC (configure domain workspace settings)
+**Theory:** Domains group workspaces for governance: apply default sensitivity
+labels per domain, set data residency policies, delegate admin rights.
+Done: created "Water Utilities" domain in Admin portal → Domains;
+assigned dp700-dev to it.
