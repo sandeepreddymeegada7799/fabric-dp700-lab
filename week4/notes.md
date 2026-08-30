@@ -119,3 +119,10 @@ long did it take). Audit logs = security/compliance trail (who viewed,
 changed, or deleted an item; permission changes). Different questions,
 different tools — a scenario asking "who changed this permission" points
 to Audit logs, not Monitoring Hub.
+
+### Capacity Metrics app — connected and verified
+Installed Microsoft Fabric Capacity Metrics app, connected to ascivofabric
+via OAuth2 (UTC offset -4 for Eastern Time). Pages available: Health,
+Compute, Storage, Autoscale compute for Spark, Item History (Preview).
+Health page shows utilization trend across the sprint — visible spikes
+during active sessions, flat during paused periods.
