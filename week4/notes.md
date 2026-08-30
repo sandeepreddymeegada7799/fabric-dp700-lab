@@ -72,3 +72,50 @@ tooling). Choose over ad-hoc CTAS when the team wants schema changes
 code-reviewed before hitting production.
 
 Downloaded: wh_gold SQL database project artifact.
+
+
+
+## Session 4B — Monitoring Hub + Capacity Metrics
+
+### Part 1 — Monitoring Hub
+**Theory:** Unified run history across every item type (pipelines,
+notebooks, dataflows, Spark jobs) in every workspace the user can access.
+Persists historical runs, not just live sessions. Columns: Status, Start
+time, Duration, Submitter, Location. — EXAM TOPIC (monitor ingestion,
+transformation, semantic model refresh)
+
+Reviewed: pl_bronze_epa_http history (including the 1C 404 failure and
+badpath drill), pl_master_nightly history (including the 2D Failed/Skipped
+pair), Spark notebook session history from 2A/2B/3A.
+
+### Part 2 — Capacity Metrics app
+**Theory:** A Power BI app installed over a specific Fabric capacity,
+showing CU utilization over time. Installed from Admin portal → Capacity
+settings (or via app search). — EXAM TOPIC (monitor via Capacity Metrics)
+
+Installed and viewed against ascivofabric — usage spikes visible for every
+session, flat zero during paused periods across the full Aug 9–30 sprint.
+
+### Part 3 — CU behavior — EXAM TOPIC (heavily tested, memorize the list)
+**Theory:**
+- **Interactive operations**: user actively waiting (notebook cell run,
+  live query) — lower tolerance for delay
+- **Background operations**: no one watching (scheduled pipeline,
+  dataflow refresh, streaming ingestion) — can be smoothed/throttled more
+
+- **Smoothing**: CU consumption spread across a rolling window instead of
+  charged as an instant spike, so one heavy job doesn't blow the capacity
+  instantly.
+
+- **Throttling escalation (four stages, in order)**:
+  1. Overage tracking — usage exceeds capacity, still runs, logged
+  2. Interactive delay — interactive operations slow down
+  3. Interactive rejection — interactive operations refused
+  4. Background rejection — background operations refused entirely
+
+### Part 4 — Audit logs vs Monitoring Hub — EXAM TOPIC
+**Theory:** Monitoring Hub = operational run history (did it succeed, how
+long did it take). Audit logs = security/compliance trail (who viewed,
+changed, or deleted an item; permission changes). Different questions,
+different tools — a scenario asking "who changed this permission" points
+to Audit logs, not Monitoring Hub.
